@@ -428,6 +428,24 @@ function findHeaderRow(rows) {
   return bestIdx;
 }
 
+// Manual column overrides — these fields are pulled from fixed sheet columns
+// (by letter) regardless of header text, since header-based matching was
+// picking up the wrong column for them.
+const FIXED_COLUMNS = {
+  lob: 'O',                 // Top Source LOB
+  transferReason: 'Q',      // Top Transfer Reason
+  distinctReason: 'R',      // Distinct Reasons count
+  customerAppreciation: 'AB' // Customer Appreciation count/%
+};
+
+function colLetterToIndex(letters) {
+  let n = 0;
+  for (let i = 0; i < letters.length; i++) {
+    n = n * 26 + (letters.charCodeAt(i) - 64);
+  }
+  return n - 1; // convert to 0-based index
+}
+
 function buildColumnIndex(headerRow) {
   const normed = headerRow.map(norm);
   const idx = {};
@@ -436,6 +454,9 @@ function buildColumnIndex(headerRow) {
     let pos = normed.indexOf(target);
     if (pos === -1) pos = normed.findIndex(h => h.includes(target) || target.includes(h));
     idx[key] = pos;
+  }
+  for (const key in FIXED_COLUMNS) {
+    idx[key] = colLetterToIndex(FIXED_COLUMNS[key]);
   }
   return idx;
 }
@@ -471,12 +492,14 @@ function parseRows(rawRows) {
       flAgentName: cell(r, idx, 'flAgentName'),
       transferCategory: cell(r, idx, 'transferCategory') || 'Unspecified',
       transferReason: cell(r, idx, 'transferReason') || 'Unspecified',
+      distinctReason: cell(r, idx, 'distinctReason') || 'Unspecified',
       actualCategory: cell(r, idx, 'actualCategory') || 'Unspecified',
       validation: cell(r, idx, 'validation') || 'Unspecified',
       resolution: cell(r, idx, 'resolution') || 'Unspecified',
       threatType: cell(r, idx, 'threatType') || 'None',
       repeat: cell(r, idx, 'repeat') || 'No',
-      mistransfer: cell(r, idx, 'mistransfer') || 'No'
+      mistransfer: cell(r, idx, 'mistransfer') || 'No',
+      customerAppreciation: cell(r, idx, 'customerAppreciation') || ''
     });
   }
   return out;
@@ -620,6 +643,7 @@ const isCorrect = v => matchesValue(v, ['correct','valid','accurate']) && !match
 const isResolved = v => matchesValue(v, ['resolved','closed','complete']) && !matchesValue(v,['unresolved','pending','open']);
 const isYes = v => matchesValue(v, ['yes','true','y']);
 const isThreat = v => v && norm(v) !== 'none' && norm(v) !== 'na' && norm(v) !== 'no' && norm(v) !== '';
+const isAppreciated = v => matchesValue(v, ['yes','y','true','appreciat','positive','thank']);
 const stsMatch = r => norm(r.transferReason) === norm(r.actualCategory) || (r.transferReason && r.actualCategory && norm(r.transferReason).includes(norm(r.actualCategory)));
 
 // ═══════════════════════════════════════════
@@ -641,21 +665,20 @@ function renderAll() {
 
   const avgAHT = avg(rows, 'aht');
   const uniqueAgents = new Set(rows.map(r => r.agentName)).size;
-  const uniqueLOBs = new Set(rows.map(r => r.lob)).size;
   document.getElementById('kpiVolume').innerHTML =
     kpiCard('total','gold','📞','Total Calls', total.toLocaleString(), `Across ${uniqueAgents} ToE agents`, 'volume-total') +
     kpiCard('aht','violet','⏱️','Avg ToE AHT', avgAHT.toFixed(1) + ' min', 'Handling time per call', 'volume-aht') +
-    kpiCard('agents','cyan','🧑‍💼','Active Experts', uniqueAgents, 'Unique ToE agents logging calls', 'volume-agents') +
-    kpiCard('lobs','mint','🔀','Source LOBs', uniqueLOBs, 'Frontline channels feeding ToE', 'volume-lobs');
+    kpiCard('agents','cyan','🧑‍💼','Active Experts', uniqueAgents, 'Unique ToE agents logging calls', 'volume-agents');
 
   const lobGroups = groupCount(rows, 'lob');
   const reasonGroups = groupCount(rows, 'transferReason');
+  const distinctReasonGroups = groupCount(rows, 'distinctReason');
   const topLOB = lobGroups[0] || ['—',0];
   const topReason = reasonGroups[0] || ['—',0];
   document.getElementById('kpiTransfer').innerHTML =
     kpiCard('topLOB','amber','📥','Top Source LOB', topLOB[0], `${topLOB[1]} calls · ${pct(topLOB[1],total)}%`, 'transfer-lob') +
     kpiCard('topReason','rose','🏷️','Top Transfer Reason', topReason[0], `${topReason[1]} calls · ${pct(topReason[1],total)}%`, 'transfer-reason') +
-    kpiCard('reasonCount','cyan','📊','Distinct Reasons', reasonGroups.length, 'Frontline STS tags in scope', 'transfer-reason') +
+    kpiCard('reasonCount','cyan','📊','Distinct Reasons', distinctReasonGroups.length, 'Distinct reason tags in scope', 'transfer-reasondistinct') +
     kpiCard('category','violet','📂','Transfer Categories', new Set(rows.map(r=>r.transferCategory)).size, 'Distinct transfer categories', 'transfer-category');
 
   const correctCount = rows.filter(r => isCorrect(r.validation)).length;
@@ -670,11 +693,12 @@ function renderAll() {
   const threatCount = rows.filter(r => isThreat(r.threatType)).length;
   const repeatCount = rows.filter(r => isYes(r.repeat)).length;
   const mistransferCount = rows.filter(r => isYes(r.mistransfer)).length;
+  const appreciationCount = rows.filter(r => isAppreciated(r.customerAppreciation)).length;
   document.getElementById('kpiRisk').innerHTML =
     kpiCard('threat','rose','🚨','Potential Threats Flagged', threatCount, `${pct(threatCount,total)}% of total calls`, 'risk-threat') +
     kpiCard('repeat','amber','🔁','Repeat Customers', pct(repeatCount,total)+'%', `${repeatCount} repeat contacts`, 'risk-repeat') +
     kpiCard('mistransfer','violet','🔀','Mis-transfer Tag', pct(mistransferCount,total)+'%', `${mistransferCount} flagged mis-transfers`, 'risk-mistransfer') +
-    kpiCard('escalations','cyan','📈','Threat-free Rate', pct(total-threatCount,total)+'%', 'Calls with no flagged risk', 'risk-threat');
+    kpiCard('appreciation','mint','🌟','Customer Appreciation', appreciationCount, `${pct(appreciationCount,total)}% of total calls`, 'risk-appreciation');
 
   if (activeDrill) renderDrilldown(activeDrill);
   renderCharts(rows);
@@ -688,9 +712,9 @@ const DRILL_CONFIG = {
   'volume-total':   { panel:'drillVolume', title:'📞 Call Volume Breakdown', groups:[['Call Type','callType'],['Shift','shift'],['ToE Agent','agentName']] },
   'volume-aht':     { panel:'drillVolume', title:'⏱️ AHT Breakdown', custom:'aht' },
   'volume-agents':  { panel:'drillVolume', title:'🧑‍💼 Calls per Agent', groups:[['ToE Agent','agentName']] },
-  'volume-lobs':    { panel:'drillVolume', title:'🔀 Source LOB Spread', groups:[['Frontline LOB','lob']] },
   'transfer-lob':   { panel:'drillTransfer', title:'📥 Frontline LOB Breakdown', groups:[['Frontline LOB','lob']] },
   'transfer-reason':{ panel:'drillTransfer', title:'🏷️ Transfer Reason Breakdown', groups:[['Transfer Reason (Frontline STS)','transferReason'],['Actual Category (ToE STS)','actualCategory']] },
+  'transfer-reasondistinct':{ panel:'drillTransfer', title:'📊 Distinct Reason Breakdown', groups:[['Distinct Reason','distinctReason']] },
   'transfer-category':{ panel:'drillTransfer', title:'📂 Transfer Category Breakdown', groups:[['Transfer Category','transferCategory']] },
   'validation-correct':{ panel:'drillValidation', title:'✅ Transfer Validation', groups:[['Validation Result','validation']] },
   'validation-incorrect':{ panel:'drillValidation', title:'⚠️ Transfer Validation', groups:[['Validation Result','validation']] },
@@ -698,7 +722,8 @@ const DRILL_CONFIG = {
   'validation-resolution': { panel:'drillValidation', title:'🏁 Resolution Status', groups:[['Resolution Status','resolution']] },
   'risk-threat':    { panel:'drillRisk', title:'🚨 Potential Threat Types', groups:[['Threat Type','threatType']] },
   'risk-repeat':    { panel:'drillRisk', title:'🔁 Repeat Customer Tag', groups:[['Repeat Customer','repeat']] },
-  'risk-mistransfer': { panel:'drillRisk', title:'🔀 Mis-transfer Tag', groups:[['Mis-transfer Tag','mistransfer']] }
+  'risk-mistransfer': { panel:'drillRisk', title:'🔀 Mis-transfer Tag', groups:[['Mis-transfer Tag','mistransfer']] },
+  'risk-appreciation': { panel:'drillRisk', title:'🌟 Customer Appreciation', groups:[['Customer Appreciation','customerAppreciation']] }
 };
 
 function toggleDrill(key) {
