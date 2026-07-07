@@ -476,13 +476,7 @@ function parseRows(rawRows) {
     const r = rawRows[i];
     if (!r || r.every(c => !c || !c.trim())) continue;
     const dateRaw = cell(r, idx, 'date');
-    // A row used to be dropped whenever BOTH Date and Serial No. were blank,
-    // even if it had real call data in every other column (agent, transfer
-    // reason, etc.) — this silently under-counted Total Calls. Now a row only
-    // gets skipped if it has no identifying data anywhere.
-    const hasIdentifyingData = dateRaw || cell(r, idx, 'serial') || cell(r, idx, 'agentName') ||
-      cell(r, idx, 'transferReason') || cell(r, idx, 'callType');
-    if (!hasIdentifyingData) continue;
+    if (!dateRaw && !cell(r, idx, 'serial')) continue;
     out.push({
       date: dateRaw,
       week: cell(r, idx, 'week'),
