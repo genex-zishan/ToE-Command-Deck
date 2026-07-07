@@ -476,7 +476,13 @@ function parseRows(rawRows) {
     const r = rawRows[i];
     if (!r || r.every(c => !c || !c.trim())) continue;
     const dateRaw = cell(r, idx, 'date');
-    if (!dateRaw && !cell(r, idx, 'serial')) continue;
+    // A row used to be dropped whenever BOTH Date and Serial No. were blank,
+    // even if it had real call data in every other column (agent, transfer
+    // reason, etc.) — this silently under-counted Total Calls. Now a row only
+    // gets skipped if it has no identifying data anywhere.
+    const hasIdentifyingData = dateRaw || cell(r, idx, 'serial') || cell(r, idx, 'agentName') ||
+      cell(r, idx, 'transferReason') || cell(r, idx, 'callType');
+    if (!hasIdentifyingData) continue;
     out.push({
       date: dateRaw,
       week: cell(r, idx, 'week'),
@@ -642,7 +648,19 @@ function matchesValue(str, positiveTokens) {
 const isCorrect = v => matchesValue(v, ['correct','valid','accurate']) && !matchesValue(v,['incorrect','invalid']);
 const isResolved = v => matchesValue(v, ['resolved','closed','complete']) && !matchesValue(v,['unresolved','pending','open']);
 const isYes = v => matchesValue(v, ['yes','true','y']);
-const isThreat = v => v && norm(v) !== 'none' && norm(v) !== 'na' && norm(v) !== 'no' && norm(v) !== '';
+// Potential Threat Flagged should ONLY count these specific escalation categories
+// (BTRC, DNCRP, Media, Legal Action, CEO/CXO) — NOT "Invalid" or any other
+// stray value that happens to be non-blank in the Potential Threat Type (Y) column.
+const THREAT_CATEGORY_TOKENS = ['btrc','dncrp','media','legalaction','ceocxo','ceo','cxo'];
+// Regardless of what's tagged in the Potential Threat Type (Y) column, a row is
+// NEVER counted as a threat if the Distinct Reason (R) column says Wrong Transfer
+// or English Hotline.
+function isThreat(row) {
+  const reason = norm(row.distinctReason);
+  if (reason.includes('wrongtransfer') || reason.includes('englishhotline')) return false;
+  const t = norm(row.threatType);
+  return THREAT_CATEGORY_TOKENS.some(tok => t.includes(tok));
+}
 const isAppreciated = v => matchesValue(v, ['yes','y','true','appreciat','positive','thank']);
 const stsMatch = r => norm(r.transferReason) === norm(r.actualCategory) || (r.transferReason && r.actualCategory && norm(r.transferReason).includes(norm(r.actualCategory)));
 
@@ -690,7 +708,7 @@ function renderAll() {
     kpiCard('stsmatch','cyan','🎯','STS Match Rate', pct(matchCount,total)+'%', 'Frontline STS vs ToE STS agreement', 'validation-sts') +
     kpiCard('resolved','gold','🏁','Resolution Rate', pct(resolvedCount,total)+'%', `${resolvedCount} resolved of ${total}`, 'validation-resolution');
 
-  const threatCount = rows.filter(r => isThreat(r.threatType)).length;
+  const threatCount = rows.filter(isThreat).length;
   const repeatCount = rows.filter(r => isYes(r.repeat)).length;
   const mistransferCount = rows.filter(r => isYes(r.mistransfer)).length;
   const appreciationCount = rows.filter(r => isAppreciated(r.customerAppreciation)).length;
@@ -720,7 +738,7 @@ const DRILL_CONFIG = {
   'validation-incorrect':{ panel:'drillValidation', title:'⚠️ Transfer Validation', groups:[['Validation Result','validation']] },
   'validation-sts': { panel:'drillValidation', title:'🎯 Frontline STS vs ToE STS', custom:'sts' },
   'validation-resolution': { panel:'drillValidation', title:'🏁 Resolution Status', groups:[['Resolution Status','resolution']] },
-  'risk-threat':    { panel:'drillRisk', title:'🚨 Potential Threat Types', groups:[['Threat Type','threatType']] },
+  'risk-threat':    { panel:'drillRisk', title:'🚨 Potential Threat Types', groups:[['Threat Type','threatType']], rowFilter:'threat' },
   'risk-repeat':    { panel:'drillRisk', title:'🔁 Repeat Customer Tag', groups:[['Repeat Customer','repeat']] },
   'risk-mistransfer': { panel:'drillRisk', title:'🔀 Mis-transfer Tag', groups:[['Mis-transfer Tag','mistransfer']] },
   'risk-appreciation': { panel:'drillRisk', title:'🌟 Customer Appreciation', groups:[['Customer Appreciation','customerAppreciation']] }
@@ -783,10 +801,12 @@ function renderDrilldown(key) {
         ${reasonListHTML(groupCount(rows.filter(r=>!stsMatch(r)), 'actualCategory'), (total - matchCount) || 1)}
       </div>`;
   } else {
+    const scopedRows = cfg.rowFilter === 'threat' ? rows.filter(isThreat) : rows;
+    const scopedTotal = cfg.rowFilter === 'threat' ? scopedRows.length : total;
     sectionsHTML = cfg.groups.map(([label,field]) => `
       <div class="drilldown-section">
         <h4>${escHtml(label)}</h4>
-        ${reasonListHTML(groupCount(rows, field), total)}
+        ${reasonListHTML(groupCount(scopedRows, field), scopedTotal)}
       </div>`).join('');
   }
 
@@ -867,7 +887,7 @@ function renderCharts(rows) {
     options:{ plugins:{legend:{position:'bottom',labels:{color:'#aaa3c2',font:{size:11}}}}, maintainAspectRatio:false, cutout:'60%' }
   });
 
-  const threatGroups = groupCount(rows.filter(r=>isThreat(r.threatType)), 'threatType').slice(0,10);
+  const threatGroups = groupCount(rows.filter(isThreat), 'threatType').slice(0,10);
   destroyChart('threat');
   charts.threat = new Chart(document.getElementById('chartThreat'), {
     type:'bar',
